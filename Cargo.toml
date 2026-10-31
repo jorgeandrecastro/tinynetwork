@@ -1,0 +1,13 @@
+# Workspace hôte : seul `tnp` (no_std, testable sur PC) en fait partie.
+# `firmware/` est exclu car il se compile pour riscv32imc (ESP32-C3).
+[workspace]
+members = ["tnp"]
+exclude = ["firmware"]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

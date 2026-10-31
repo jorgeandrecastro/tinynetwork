@@ -1,0 +1,46 @@
+[package]
+name = "tinynetwork-fw"
+version = "0.1.0"
+edition = "2021"
+authors = ["Jorge (jorgeandrecastro)"]
+description = "tinyNetwork firmware for ESP32-C3: TNP mesh over raw 802.11 Action Frames"
+license = "GPL-2.0-or-later"
+repository = "https://github.com/jorgeandrecastro/tinyNetwork"
+publish = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+
+[[bin]]
+name = "tinynetwork-fw"
+path = "src/main.rs"
+
+[dependencies]
+tnp = { path = "../tnp" }
+
+esp-hal = { version = "~1.2", default-features = false, features = ["esp32c3", "rt", "unstable"] }
+esp-rtos = { version = "0.4.0", features = ["esp32c3", "embassy", "esp-alloc", "esp-radio"] }
+# Version épinglée : celle que l'écosystème esp-hal 1.2 / esp-rtos 0.4 utilise (la beta.2 est yankée).
+esp-radio = { version = "=1.0.0-beta.1", default-features = false, features = ["esp32c3", "wifi", "sniffer", "unstable", "esp-alloc"] }
+esp-alloc = "0.11.0"
+esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32c3"] }
+esp-backtrace = { version = "0.20.0", features = ["esp32c3", "panic-handler", "println"] }
+esp-println = { version = "0.18.0", default-features = false, features = ["esp32c3", "auto"] }
+
+embassy-executor = "0.10.0"
+embassy-time = "0.5.0"
+embassy-sync = "0.8.0"
+
+[profile.dev]
+opt-level = "s"
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = 1

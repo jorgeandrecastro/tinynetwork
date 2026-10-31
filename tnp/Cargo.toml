@@ -1,0 +1,23 @@
+[package]
+name = "tnp"
+version = "0.1.0"
+edition = "2021"
+authors = ["Jorge (jorgeandrecastro)"]
+description = "tinyNetwork Protocol (TNP): no_std packet encoding/decoding with CRC16 and 802.11 Action Frame wrapping for raw-frame mesh networking"
+license = "GPL-2.0-or-later"
+keywords = ["no_std", "embedded", "mesh", "esp32", "protocol"]
+categories = ["embedded", "no-std", "network-programming"]
+repository = "https://github.com/jorgeandrecastro/tinyNetwork"
+readme = "README.md"
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+
+[lib]
+name = "tnp"
+path = "src/lib.rs"
+
+[features]
+default = []
