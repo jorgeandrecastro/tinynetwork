@@ -20,7 +20,7 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_println::println;
 use esp_radio::wifi::sta::StationConfig;
 use esp_radio::wifi::{Config, ControllerConfig, SecondaryChannel, WifiController};
-use tnp::{Packet, PacketType, BROADCAST, CRC_LEN, DEFAULT_TTL};
+use tnp::{Packet, PacketType, BROADCAST, DEFAULT_TTL};
 use {esp_backtrace as _, esp_println as _};
 
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -33,7 +33,7 @@ const BEACON_PERIOD: Duration = Duration::from_secs(5);
 const SEEN_TTL: Duration = Duration::from_secs(3);
 const SEEN_SLOTS: usize = 16;
 
-/// Cache circulaire des derniers paquets vus : clé = (source, CRC16 du paquet).
+/// Cache circulaire des derniers paquets vus : clé = (source, numéro de séquence).
 struct SeenCache {
     slots: [Option<(u32, u16, Instant)>; SEEN_SLOTS],
     next: usize,
@@ -48,14 +48,14 @@ impl SeenCache {
     }
 
     /// Renvoie `true` si le paquet a déjà été vu récemment ; sinon l'enregistre.
-    fn seen_before(&mut self, src: u32, fp: u16, now: Instant) -> bool {
+    fn seen_before(&mut self, src: u32, seq: u16, now: Instant) -> bool {
         for (s, f, t) in self.slots.iter().flatten() {
-            if *s == src && *f == fp && now.duration_since(*t) < SEEN_TTL {
+            if *s == src && *f == seq && now.duration_since(*t) < SEEN_TTL {
                 return true;
             }
         }
         if let Some(slot) = self.slots.get_mut(self.next) {
-            *slot = Some((src, fp, now));
+            *slot = Some((src, seq, now));
         }
         self.next = (self.next + 1) % SEEN_SLOTS;
         false
@@ -139,7 +139,14 @@ async fn beacon_task(mac: [u8; 6], my_id: u32) {
     let mut counter: u32 = 0;
     loop {
         let payload = counter.to_be_bytes();
-        if let Ok(p) = Packet::new(PacketType::Ping, DEFAULT_TTL, my_id, BROADCAST, &payload) {
+        if let Ok(p) = Packet::new(
+            PacketType::Ping,
+            DEFAULT_TTL,
+            my_id,
+            BROADCAST,
+            radio::next_seq(),
+            &payload,
+        ) {
             if let Err(e) = radio::send(&mac, &p) {
                 println!("beacon: {}", e);
             }
@@ -150,6 +157,7 @@ async fn beacon_task(mac: [u8; 6], my_id: u32) {
                 DEFAULT_TTL,
                 my_id,
                 BROADCAST,
+                radio::next_seq(),
                 b"salut depuis TNP",
             ) {
                 let _ = radio::send(&mac, &p);
@@ -183,19 +191,14 @@ async fn rx_task(mac: [u8; 6], my_id: u32) {
             continue; // écho de nos propres émissions
         }
 
-        // Empreinte = CRC16 du paquet (les 2 derniers octets du paquet TNP).
-        let n = pkt.encoded_len();
-        let fp = match body.get(n - CRC_LEN..n) {
-            Some(&[a, b]) => u16::from_be_bytes([a, b]),
-            _ => continue,
-        };
-        if seen.seen_before(h.src, fp, Instant::now()) {
+        // Doublon (même source, même numéro de séquence) : déjà traité ou relayé.
+        if seen.seen_before(h.src, h.seq, Instant::now()) {
             continue;
         }
 
         println!(
-            "rx: {:?} src={:08x} dst={:08x} ttl={} rssi={}dBm len={}",
-            h.ptype, h.src, h.dst, h.ttl, rx.rssi, pkt.payload.len()
+            "rx: {:?} src={:08x} dst={:08x} seq={} ttl={} rssi={}dBm len={}",
+            h.ptype, h.src, h.dst, h.seq, h.ttl, rx.rssi, pkt.payload.len()
         );
 
         let for_me = h.dst == my_id || h.is_broadcast();
@@ -203,7 +206,14 @@ async fn rx_task(mac: [u8; 6], my_id: u32) {
             match h.ptype {
                 PacketType::Ping => {
                     // Réponse unicast : on renvoie le payload tel quel.
-                    if let Ok(p) = Packet::new(PacketType::Pong, DEFAULT_TTL, my_id, h.src, pkt.payload) {
+                    if let Ok(p) = Packet::new(
+                        PacketType::Pong,
+                        DEFAULT_TTL,
+                        my_id,
+                        h.src,
+                        radio::next_seq(),
+                        pkt.payload,
+                    ) {
                         let _ = radio::send(&mac, &p);
                     }
                 }
@@ -219,11 +229,11 @@ async fn rx_task(mac: [u8; 6], my_id: u32) {
         }
 
         // Relais par inondation : tout ce qui n'est pas strictement pour nous.
-        if h.dst != my_id && h.ttl > 1 {
-            // Petit délai pseudo-aléatoire pour limiter les collisions entre relais.
-            Timer::after(Duration::from_millis(2 + ((my_id ^ fp as u32) % 13) as u64)).await;
-            if let Ok(p) = Packet::new(h.ptype, h.ttl - 1, h.src, h.dst, pkt.payload) {
-                let _ = radio::send(&mac, &p);
+        if h.dst != my_id {
+            if let Some(relayed) = pkt.relayed() {
+                // Petit délai pseudo-aléatoire pour limiter les collisions entre relais.
+                Timer::after(Duration::from_millis(2 + ((my_id ^ h.seq as u32) % 13) as u64)).await;
+                let _ = radio::send(&mac, &relayed);
             }
         }
     }

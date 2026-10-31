@@ -60,7 +60,7 @@ mod tests {
 
     #[test]
     fn wrap_unwrap_roundtrip() {
-        let p = Packet::new(PacketType::Ping, 4, 7, BROADCAST, b"hi").unwrap();
+        let p = Packet::new(PacketType::Ping, 4, 7, BROADCAST, 1, b"hi").unwrap();
         let enc = EncodedPacket::from_packet(&p).unwrap();
         let mac = [2, 0, 0, 0, 0, 1];
 

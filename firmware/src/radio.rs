@@ -2,7 +2,9 @@
 //! statiques utilisées par la logique TNP. Aucune allocation côté TNP : trames de
 //! taille fixe dans des `Channel` embassy statiques.
 
+use core::cell::Cell;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::channel::Channel;
 use esp_radio::wifi::sniffer::{PromiscuousPkt, Sniffer};
 use esp_println::println;
@@ -21,6 +23,19 @@ pub struct RxFrame {
 pub struct TxFrame {
     pub len: usize,
     pub data: [u8; MAX_FRAME],
+}
+
+/// Compteur de séquence des paquets que CE nœud crée (les relais conservent le `seq` d'origine).
+/// Mutex + `Cell` : le RISC-V `imc` de l'ESP32-C3 n'a pas d'instructions atomiques.
+static SEQ: Mutex<CriticalSectionRawMutex, Cell<u16>> = Mutex::new(Cell::new(0));
+
+/// Prochain numéro de séquence (s'enroule à 65535 → 0).
+pub fn next_seq() -> u16 {
+    SEQ.lock(|c| {
+        let v = c.get();
+        c.set(v.wrapping_add(1));
+        v
+    })
 }
 
 pub static RX_QUEUE: Channel<CriticalSectionRawMutex, RxFrame, 4> = Channel::new();

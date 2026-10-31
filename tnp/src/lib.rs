@@ -4,7 +4,10 @@
 //! TNP: tinyNetwork Protocol.
 //!
 //! Format sur le fil (big-endian) :
-//! `[magic 2][ver 1][type 1][ttl 1][src 4][dst 4][len 1][payload 0..=200][crc16 2]`
+//! `[magic 2][ver 1][type 1][ttl 1][src 4][dst 4][seq 2][len 1][payload 0..=200][crc16 2]`
+//!
+//! `seq` est un compteur propre à chaque source, conservé tel quel par les relais : le couple
+//! `(src, seq)` identifie un paquet de façon unique (dédoublonnage, accusés de réception).
 //!
 //! Aucune allocation, aucun `unsafe`, aucun `panic` dans les chemins d'encodage /
 //! décodage : toutes les erreurs remontent via [`TnpError`].
@@ -12,10 +15,10 @@
 pub mod dot11;
 
 pub const MAGIC: [u8; 2] = [0x54, 0x4E]; // "TN"
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 pub const BROADCAST: u32 = 0xFFFF_FFFF;
 
-pub const HEADER_LEN: usize = 14;
+pub const HEADER_LEN: usize = 16;
 pub const CRC_LEN: usize = 2;
 pub const MAX_PAYLOAD: usize = 200;
 pub const MAX_PACKET: usize = HEADER_LEN + MAX_PAYLOAD + CRC_LEN;
@@ -67,6 +70,7 @@ pub struct TnpHeader {
     pub ttl: u8,
     pub src: u32,
     pub dst: u32,
+    pub seq: u16,
     pub payload_len: u8,
 }
 
@@ -78,7 +82,8 @@ impl TnpHeader {
         out[4] = self.ttl;
         out[5..9].copy_from_slice(&self.src.to_be_bytes());
         out[9..13].copy_from_slice(&self.dst.to_be_bytes());
-        out[13] = self.payload_len;
+        out[13..15].copy_from_slice(&self.seq.to_be_bytes());
+        out[15] = self.payload_len;
     }
 
     fn parse(b: &[u8; HEADER_LEN]) -> Result<Self, TnpError> {
@@ -89,7 +94,7 @@ impl TnpHeader {
             return Err(TnpError::UnsupportedVersion(b[2]));
         }
         let ptype = PacketType::from_u8(b[3]).ok_or(TnpError::UnknownType(b[3]))?;
-        if b[13] as usize > MAX_PAYLOAD {
+        if b[15] as usize > MAX_PAYLOAD {
             return Err(TnpError::PayloadTooLarge);
         }
         Ok(Self {
@@ -98,7 +103,8 @@ impl TnpHeader {
             ttl: b[4],
             src: u32::from_be_bytes([b[5], b[6], b[7], b[8]]),
             dst: u32::from_be_bytes([b[9], b[10], b[11], b[12]]),
-            payload_len: b[13],
+            seq: u16::from_be_bytes([b[13], b[14]]),
+            payload_len: b[15],
         })
     }
 
@@ -141,6 +147,7 @@ impl<'a> Packet<'a> {
         ttl: u8,
         src: u32,
         dst: u32,
+        seq: u16,
         payload: &'a [u8],
     ) -> Result<Self, TnpError> {
         if payload.len() > MAX_PAYLOAD {
@@ -153,10 +160,22 @@ impl<'a> Packet<'a> {
                 ttl,
                 src,
                 dst,
+                seq,
                 payload_len: payload.len() as u8, // ≤ 200, cast sans perte
             },
             payload,
         })
+    }
+
+    /// Copie du paquet prête à être relayée : TTL décrémenté, `src`/`dst`/`seq` inchangés.
+    /// `None` si le TTL est épuisé (≤ 1) : le paquet ne doit plus être relayé.
+    pub fn relayed(&self) -> Option<Self> {
+        if self.header.ttl <= 1 {
+            return None;
+        }
+        let mut p = *self;
+        p.header.ttl -= 1;
+        Some(p)
     }
 
     /// Longueur totale encodée (en-tête + payload + CRC).
@@ -244,7 +263,7 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let p = Packet::new(PacketType::Message, DEFAULT_TTL, 1, BROADCAST, b"salut").unwrap();
+        let p = Packet::new(PacketType::Message, DEFAULT_TTL, 1, BROADCAST, 42, b"salut").unwrap();
         let enc = EncodedPacket::from_packet(&p).unwrap();
         let dec = Packet::decode(enc.as_bytes()).unwrap();
         assert_eq!(dec, p);
@@ -254,7 +273,7 @@ mod tests {
     #[test]
     fn roundtrip_max_payload() {
         let data = [0xA5u8; MAX_PAYLOAD];
-        let p = Packet::new(PacketType::Message, 1, 7, 9, &data).unwrap();
+        let p = Packet::new(PacketType::Message, 1, 7, 9, 0xFFFF, &data).unwrap();
         let enc = EncodedPacket::from_packet(&p).unwrap();
         assert_eq!(enc.as_bytes().len(), MAX_PACKET);
         assert_eq!(Packet::decode(enc.as_bytes()).unwrap(), p);
@@ -262,7 +281,7 @@ mod tests {
 
     #[test]
     fn rejects_corruption() {
-        let p = Packet::new(PacketType::Ping, 3, 1, 2, &[]).unwrap();
+        let p = Packet::new(PacketType::Ping, 3, 1, 2, 0, &[]).unwrap();
         let mut b = [0u8; MAX_PACKET];
         let n = p.encode_into(&mut b).unwrap();
         b[6] ^= 0x01;
@@ -271,7 +290,7 @@ mod tests {
 
     #[test]
     fn rejects_truncated_payload() {
-        let p = Packet::new(PacketType::Message, 3, 1, 2, b"abcdef").unwrap();
+        let p = Packet::new(PacketType::Message, 3, 1, 2, 5, b"abcdef").unwrap();
         let mut b = [0u8; MAX_PACKET];
         let n = p.encode_into(&mut b).unwrap();
         assert_eq!(Packet::decode(&b[..n - 1]), Err(TnpError::TooShort));
@@ -283,17 +302,17 @@ mod tests {
         assert_eq!(Packet::decode(&[0u8; 5]), Err(TnpError::TooShort));
         assert_eq!(Packet::decode(&[0u8; HEADER_LEN + 2]), Err(TnpError::BadMagic));
         assert_eq!(
-            Packet::new(PacketType::Message, 1, 1, 2, &[0u8; MAX_PAYLOAD + 1]),
+            Packet::new(PacketType::Message, 1, 1, 2, 0, &[0u8; MAX_PAYLOAD + 1]),
             Err(TnpError::PayloadTooLarge)
         );
-        let p = Packet::new(PacketType::Message, 1, 1, 2, b"abc").unwrap();
+        let p = Packet::new(PacketType::Message, 1, 1, 2, 0, b"abc").unwrap();
         let mut small = [0u8; 4];
         assert_eq!(p.encode_into(&mut small), Err(TnpError::BufferTooSmall));
     }
 
     #[test]
     fn rejects_bad_version_and_type() {
-        let p = Packet::new(PacketType::Ping, 3, 1, 2, &[]).unwrap();
+        let p = Packet::new(PacketType::Ping, 3, 1, 2, 0, &[]).unwrap();
         let mut b = [0u8; MAX_PACKET];
         let n = p.encode_into(&mut b).unwrap();
 
@@ -307,8 +326,40 @@ mod tests {
     }
 
     #[test]
+    fn seq_is_preserved_on_the_wire() {
+        let p = Packet::new(PacketType::Ping, 3, 1, 2, 0xABCD, b"x").unwrap();
+        let enc = EncodedPacket::from_packet(&p).unwrap();
+        assert_eq!(enc.as_bytes()[13..15], [0xAB, 0xCD]);
+        assert_eq!(Packet::decode(enc.as_bytes()).unwrap().header.seq, 0xABCD);
+    }
+
+    #[test]
+    fn relay_decrements_ttl_and_keeps_identity() {
+        let p = Packet::new(PacketType::Message, 3, 11, 22, 77, b"hop").unwrap();
+        let r = p.relayed().unwrap();
+        assert_eq!(r.header.ttl, 2);
+        assert_eq!((r.header.src, r.header.dst, r.header.seq), (11, 22, 77));
+        assert_eq!(r.payload, p.payload);
+        // TTL épuisé : plus de relais
+        let last = Packet::new(PacketType::Message, 1, 11, 22, 77, b"hop").unwrap();
+        assert!(last.relayed().is_none());
+        let zero = Packet::new(PacketType::Message, 0, 11, 22, 77, b"hop").unwrap();
+        assert!(zero.relayed().is_none());
+    }
+
+    #[test]
+    fn rejects_v1_packets() {
+        // Un paquet « v1 » (en-tête 14 octets, version 1) ne doit pas être accepté.
+        let mut b = [0u8; MAX_PACKET];
+        b[0..2].copy_from_slice(&MAGIC);
+        b[2] = 1;
+        b[3] = PacketType::Ping as u8;
+        assert_eq!(Packet::decode(&b[..HEADER_LEN + CRC_LEN]), Err(TnpError::UnsupportedVersion(1)));
+    }
+
+    #[test]
     fn ignores_trailing_bytes() {
-        let p = Packet::new(PacketType::Ping, 3, 1, 2, b"x").unwrap();
+        let p = Packet::new(PacketType::Ping, 3, 1, 2, 0, b"x").unwrap();
         let mut b = [0u8; MAX_PACKET + 4];
         let n = p.encode_into(&mut b).unwrap();
         assert_eq!(Packet::decode(&b[..n + 4]).unwrap(), p);

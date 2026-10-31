@@ -10,7 +10,7 @@ for mesh networking over raw 802.11 frames on microcontrollers.
 
 ## Features
 
-- Fixed 14-byte header, payload up to 200 bytes, CRC-16/CCITT-FALSE trailer
+- Fixed 16-byte header (including a per-source sequence number), payload up to 200 bytes, CRC-16/CCITT-FALSE trailer
 - Explicit big-endian (de)serialization: no `unsafe`, no `repr(packed)`, no panics on malformed input
 - Zero-copy decoding (`Packet<'a>` borrows the receive buffer)
 - 802.11 Action Frame wrapping/unwrapping (`dot11` module), vendor-specific category with a dedicated OUI
@@ -18,7 +18,7 @@ for mesh networking over raw 802.11 frames on microcontrollers.
 ## Wire format
 
 ```
-[magic 2][ver 1][type 1][ttl 1][src 4][dst 4][len 1][payload 0..=200][crc16 2]
+[magic 2][ver 1][type 1][ttl 1][src 4][dst 4][seq 2][len 1][payload 0..=200][crc16 2]
 ```
 
 ## Example
@@ -26,7 +26,7 @@ for mesh networking over raw 802.11 frames on microcontrollers.
 ```rust
 use tnp::{EncodedPacket, Packet, PacketType, BROADCAST, DEFAULT_TTL};
 
-let pkt = Packet::new(PacketType::Message, DEFAULT_TTL, 1, BROADCAST, b"hello")?;
+let pkt = Packet::new(PacketType::Message, DEFAULT_TTL, 1, BROADCAST, 0, b"hello")?;
 let enc = EncodedPacket::from_packet(&pkt)?;
 let back = Packet::decode(enc.as_bytes())?;
 assert_eq!(back, pkt);
