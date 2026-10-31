@@ -1,6 +1,6 @@
 [package]
 name = "tnp"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Jorge (jorgeandrecastro)"]
 description = "tinyNetwork Protocol (TNP): no_std packet encoding/decoding with CRC16 and 802.11 Action Frame wrapping for raw-frame mesh networking"
